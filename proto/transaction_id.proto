@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package transaction;
+
+option go_package = "./proto";
+
+service TransactionIDService {
+  rpc GetNewTransactionID (TransactionIDRequest) returns (TransactionIDResponse);
+}
+
+message TransactionIDRequest {}
+
+message TransactionIDResponse {
+  string transaction_id = 1;
+}

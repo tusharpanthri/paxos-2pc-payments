@@ -1,0 +1,12 @@
+TXN-000001-debit-debit,ACC3,ACC1,25.00,debit
+TXN-000001-credit-credit,ACC3,ACC1,25.00,credit
+TXN-000002-credit-credit,ACC2,ACC3,250.00,credit
+TXN-000003-debit-debit,ACC3,ACC2,175.00,debit
+TXN-000005-debit-debit,ACC3,ACC1,340.00,debit
+TXN-000005-credit-credit,ACC3,ACC1,340.00,credit
+TXN-000006-debit-debit,ACC3,ACC2,100.00,debit
+TXN-000007-debit-debit,ACC3,ACC1,200.00,debit
+TXN-000007-credit-credit,ACC3,ACC1,200.00,credit
+TXN-000008-debit-debit,ACC3,ACC2,100.00,debit
+TXN-000009-debit-debit,ACC3,ACC1,10.00,debit
+TXN-000009-credit-credit,ACC3,ACC1,10.00,credit
