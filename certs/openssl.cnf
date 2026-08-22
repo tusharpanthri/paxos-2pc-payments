@@ -1,0 +1,42 @@
+# OpenSSL configuration for generate_certs.sh / generate_certs.bat.
+#
+# It is checked in on purpose, for two reasons:
+#
+#  1. OpenSSL refuses to run at all when the OPENSSL_CONF environment variable
+#     points at a file that does not exist -- a common state on machines where
+#     some other tool set it and was later uninstalled. Pinning the scripts to
+#     this file makes certificate generation work regardless.
+#
+#  2. It keeps the certificate profiles in one readable place rather than
+#     spread across a dozen -addext flags.
+
+[ req ]
+distinguished_name = req_distinguished_name
+prompt             = no
+
+[ req_distinguished_name ]
+
+# The certificate authority. basicConstraints=CA:TRUE is what marks it as an
+# authority; without it Go rejects the chain with "parent certificate cannot
+# sign this kind of certificate".
+[ v3_ca ]
+basicConstraints = critical,CA:TRUE
+keyUsage         = critical,keyCertSign,cRLSign
+subjectKeyIdentifier = hash
+
+# Server identities: the gateway, the banks and the transaction id service.
+# They all listen on localhost, and they also present this certificate when
+# dialling out, so both usages are listed.
+[ v3_server ]
+basicConstraints = critical,CA:FALSE
+keyUsage         = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth,clientAuth
+subjectAltName   = DNS:localhost,IP:127.0.0.1
+
+# The client identity presented by clients, by banks when they register, and
+# by the gateway when it calls a bank.
+[ v3_client ]
+basicConstraints = critical,CA:FALSE
+keyUsage         = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = clientAuth
+subjectAltName   = DNS:client

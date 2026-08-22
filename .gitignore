@@ -1,0 +1,20 @@
+# Compiled binaries
+/bank.exe
+/gateway.exe
+/client.exe
+/transaction_id_server.exe
+*.exe
+*.test
+
+# TLS key material. Regenerate locally with generate_certs.bat / .sh --
+# private keys must never be committed. The OpenSSL config is checked in on
+# purpose; see the note inside it.
+certs/*
+!certs/openssl.cnf
+
+# Runtime state: account balances, ledgers, credentials and queued transfers
+# are produced by running the demo, not source.
+*_users.txt
+*_transactions.txt
+*_pending.json
+transaction_counter.txt
