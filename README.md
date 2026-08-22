@@ -5,7 +5,7 @@ to a gateway over mutual TLS, the gateway routes payments to the banks that
 hold each account, and a transfer between two banks is committed with
 two-phase commit so it either happens at both banks or at neither.
 
-Written in Go for **CS3.401 Distributed Systems**.
+Written in Go.
 
 ```mermaid
 flowchart LR
