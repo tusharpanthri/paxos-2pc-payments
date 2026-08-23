@@ -1,4 +1,4 @@
-# Strife — a distributed payment gateway
+# paxos-2pc-kvstore — a distributed payment gateway
 
 A small payment system built on gRPC, in the shape of a real one: clients talk
 to a gateway over mutual TLS, the gateway routes payments to the banks that
@@ -9,8 +9,8 @@ Written in Go.
 
 ```mermaid
 flowchart LR
-    C1["client<br/><i>kevin / ACC1</i>"] -- mTLS --> GW
-    C2["client<br/><i>bhavani / ACC2</i>"] -- mTLS --> GW
+    C1["client<br/><i>varun / ACC1</i>"] -- mTLS --> GW
+    C2["client<br/><i>pavan / ACC2</i>"] -- mTLS --> GW
     C1 -. "transaction id" .-> TID["transaction id service<br/>:50055"]
     C2 -. "transaction id" .-> TID
 
@@ -46,7 +46,7 @@ go run ./transaction_id_server
 go run ./gateway
 go run ./bank -bank=ICICI -port=50052
 go run ./bank -bank=SBI   -port=50053
-go run ./client -username=kevin -password=kevin -account=ACC1 -bank=ICICI -register
+go run ./client -username=varun -password=varun -account=ACC1 -bank=ICICI -register
 ```
 
 Each command runs from the repository root. `-register` seeds the account with

@@ -1,4 +1,4 @@
-module payment_gateway
+module paxos-2pc-kvstore
 
 go 1.25.0
 

@@ -3,8 +3,8 @@ package main
 import (
 	"log"
 
-	"payment_gateway/internal/accounts"
-	"payment_gateway/internal/logx"
+	"paxos-2pc-kvstore/internal/accounts"
+	"paxos-2pc-kvstore/internal/logx"
 )
 
 // openingBalance is what a freshly seeded demo account starts with.

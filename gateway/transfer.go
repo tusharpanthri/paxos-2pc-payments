@@ -5,8 +5,8 @@ import (
 	"log"
 	"time"
 
-	"payment_gateway/internal/logx"
-	pb "payment_gateway/proto"
+	"paxos-2pc-kvstore/internal/logx"
+	pb "paxos-2pc-kvstore/proto"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

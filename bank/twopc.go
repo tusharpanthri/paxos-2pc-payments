@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"payment_gateway/internal/accounts"
+	"paxos-2pc-kvstore/internal/accounts"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

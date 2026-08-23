@@ -8,7 +8,7 @@
 //
 // Usage:
 //
-//	go run ./client -username=kevin -password=kevin -account=ACC1 -bank=ICICI -register
+//	go run ./client -username=varun -password=varun -account=ACC1 -bank=ICICI -register
 package main
 
 import (
@@ -23,9 +23,9 @@ import (
 	"strings"
 	"time"
 
-	"payment_gateway/internal/logx"
-	"payment_gateway/internal/tlsconfig"
-	pb "payment_gateway/proto"
+	"paxos-2pc-kvstore/internal/logx"
+	"paxos-2pc-kvstore/internal/tlsconfig"
+	pb "paxos-2pc-kvstore/proto"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
@@ -48,8 +48,8 @@ type config struct {
 
 func parseFlags() config {
 	var c config
-	flag.StringVar(&c.username, "username", "kevin", "username to register and log in with")
-	flag.StringVar(&c.password, "password", "kevin", "password")
+	flag.StringVar(&c.username, "username", "varun", "username to register and log in with")
+	flag.StringVar(&c.password, "password", "varun", "password")
 	flag.StringVar(&c.accountID, "account", "ACC1", "account id at the bank")
 	flag.StringVar(&c.bankName, "bank", "ICICI", "bank holding the account")
 	flag.StringVar(&c.gateway, "gateway", "localhost:50051", "address of the payment gateway")

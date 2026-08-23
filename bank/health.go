@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"payment_gateway/internal/logx"
+	"paxos-2pc-kvstore/internal/logx"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

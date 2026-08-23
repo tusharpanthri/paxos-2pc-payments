@@ -12,9 +12,9 @@ import (
 	"log"
 	"net"
 
-	"payment_gateway/internal/logx"
-	"payment_gateway/internal/tlsconfig"
-	pb "payment_gateway/proto"
+	"paxos-2pc-kvstore/internal/logx"
+	"paxos-2pc-kvstore/internal/tlsconfig"
+	pb "paxos-2pc-kvstore/proto"
 
 	"google.golang.org/grpc"
 )

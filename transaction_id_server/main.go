@@ -24,8 +24,8 @@ import (
 	"strings"
 	"sync"
 
-	"payment_gateway/internal/tlsconfig"
-	pb "payment_gateway/proto"
+	"paxos-2pc-kvstore/internal/tlsconfig"
+	pb "paxos-2pc-kvstore/proto"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

@@ -26,35 +26,60 @@ type Files struct {
 	Key  string // matching private key file name, e.g. "gateway.key"
 }
 
-// ServerCreds returns credentials for a gRPC server that requires and
-// verifies a client certificate signed by our CA.
-func ServerCreds(f Files) (credentials.TransportCredentials, error) {
+// ServerTLS returns the raw server-side TLS configuration: present our
+// certificate, and require the caller to present one signed by our CA.
+//
+// gRPC wraps this in ServerCreds below. It is exported separately because
+// Paxos replicas talk to each other over net/http rather than gRPC, and
+// net/http wants a *tls.Config directly -- there is no reason for the
+// consensus traffic to be held to a weaker standard than everything else.
+func ServerTLS(f Files) (*tls.Config, error) {
 	cert, pool, err := load(f)
 	if err != nil {
 		return nil, err
 	}
-	return credentials.NewTLS(&tls.Config{
+	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		ClientCAs:    pool,
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		MinVersion:   tls.VersionTLS13,
-	}), nil
+	}, nil
+}
+
+// ClientTLS returns the raw client-side TLS configuration. serverName must
+// match a SAN on the server's certificate.
+func ClientTLS(f Files, serverName string) (*tls.Config, error) {
+	cert, pool, err := load(f)
+	if err != nil {
+		return nil, err
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      pool,
+		ServerName:   serverName,
+		MinVersion:   tls.VersionTLS13,
+	}, nil
+}
+
+// ServerCreds returns credentials for a gRPC server that requires and
+// verifies a client certificate signed by our CA.
+func ServerCreds(f Files) (credentials.TransportCredentials, error) {
+	cfg, err := ServerTLS(f)
+	if err != nil {
+		return nil, err
+	}
+	return credentials.NewTLS(cfg), nil
 }
 
 // ClientCreds returns credentials for a gRPC client that presents its own
 // certificate and verifies the server against our CA. serverName must match
 // a SAN on the server's certificate.
 func ClientCreds(f Files, serverName string) (credentials.TransportCredentials, error) {
-	cert, pool, err := load(f)
+	cfg, err := ClientTLS(f, serverName)
 	if err != nil {
 		return nil, err
 	}
-	return credentials.NewTLS(&tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      pool,
-		ServerName:   serverName,
-		MinVersion:   tls.VersionTLS13,
-	}), nil
+	return credentials.NewTLS(cfg), nil
 }
 
 func load(f Files) (tls.Certificate, *x509.CertPool, error) {

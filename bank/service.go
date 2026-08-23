@@ -5,9 +5,9 @@ import (
 	"errors"
 	"log"
 
-	"payment_gateway/internal/accounts"
-	"payment_gateway/internal/logx"
-	pb "payment_gateway/proto"
+	"paxos-2pc-kvstore/internal/accounts"
+	"paxos-2pc-kvstore/internal/logx"
+	pb "paxos-2pc-kvstore/proto"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

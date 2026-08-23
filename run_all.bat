@@ -35,11 +35,11 @@ start "bank SBI" cmd /k "go run ./bank -bank=SBI -port=50053"
 timeout /t 2 >nul
 
 echo Starting clients...
-start "client kevin" cmd /k "go run ./client -username=kevin -password=kevin -account=ACC1 -bank=ICICI -register"
+start "client varun" cmd /k "go run ./client -username=varun -password=varun -account=ACC1 -bank=ICICI -register"
 timeout /t 2 >nul
-start "client bhavani" cmd /k "go run ./client -username=bhavani -password=bhavani -account=ACC2 -bank=SBI -register"
+start "client pavan" cmd /k "go run ./client -username=pavan -password=pavan -account=ACC2 -bank=SBI -register"
 timeout /t 2 >nul
-start "client divu" cmd /k "go run ./client -username=divu -password=divu -account=ACC3 -bank=ICICI -register"
+start "client aditya" cmd /k "go run ./client -username=aditya -password=aditya -account=ACC3 -bank=ICICI -register"
 
 echo All services started.
 endlocal
