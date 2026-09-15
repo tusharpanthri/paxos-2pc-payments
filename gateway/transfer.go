@@ -8,7 +8,6 @@ import (
 	"paxos-2pc-kvstore/internal/logx"
 	pb "paxos-2pc-kvstore/proto"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -89,7 +88,7 @@ func (c *coordinator) transfer(ctx context.Context, req *pb.TransferRequest) err
 	// client gives up waiting we still have to finish what both banks have
 	// already agreed to.
 
-	if err := c.commit(sender.CommitDebit, debit, req.TransactionId, "debit"); err != nil {
+	if err := c.commit(req.FromBank, "debit", debit, req.TransactionId); err != nil {
 		// The debit never landed, so nothing has moved. Releasing both
 		// reservations is safe and returns the funds to the sender's
 		// available balance immediately.
@@ -98,7 +97,7 @@ func (c *coordinator) transfer(ctx context.Context, req *pb.TransferRequest) err
 		return wrapPhase(err, "debit could not be committed")
 	}
 
-	if err := c.commit(receiver.CommitCredit, credit, req.TransactionId, "credit"); err != nil {
+	if err := c.commit(req.ToBank, "credit", credit, req.TransactionId); err != nil {
 		// This is the blocking window that two-phase commit is criticised
 		// for: the sender has been debited and the receiver cannot be
 		// credited. There is no safe automatic recovery without a durable
@@ -119,15 +118,27 @@ func (c *coordinator) transfer(ctx context.Context, req *pb.TransferRequest) err
 // commit retries one half of the commit phase. Bank commits are idempotent,
 // so a retry after a timeout is safe: if the first attempt actually landed,
 // the second returns success without moving money again.
-func (c *coordinator) commit(
-	rpc func(context.Context, *pb.DebitCreditRequest, ...grpc.CallOption) (*pb.DebitCreditResponse, error),
-	req *pb.DebitCreditRequest,
-	txnID, leg string,
-) error {
+//
+// The client is re-resolved from the registry on every attempt rather than
+// captured once before the loop. That is what makes a retry actually reach a
+// bank replica group's newly elected leader: if the previous leader crashes
+// mid-commit, it re-announces itself to the gateway under a fresh address,
+// and a retry bound to the old connection would otherwise keep hitting a
+// replica that has permanently stepped down.
+func (c *coordinator) commit(bankName, leg string, req *pb.DebitCreditRequest, txnID string) error {
 	var lastErr error
 	for attempt := 1; attempt <= commitAttempts; attempt++ {
+		client, err := c.registry.client(bankName)
+		if err != nil {
+			return err
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), phaseTimeout)
-		_, err := rpc(ctx, req)
+		if leg == "debit" {
+			_, err = client.CommitDebit(ctx, req)
+		} else {
+			_, err = client.CommitCredit(ctx, req)
+		}
 		cancel()
 		if err == nil {
 			return nil

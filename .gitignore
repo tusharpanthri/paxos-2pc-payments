@@ -18,3 +18,7 @@ certs/*
 *_transactions.txt
 *_pending.json
 transaction_counter.txt
+
+# Per-replica data directories for a Paxos-replicated bank group: account
+# stores, ledgers and consensus logs, all produced by run_all_replicated.bat.
+/data/

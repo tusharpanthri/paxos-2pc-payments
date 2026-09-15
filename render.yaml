@@ -1,0 +1,17 @@
+# Render blueprint for the control plane backend (free plan, no card needed).
+# New > Blueprint > pick this repo, or create a Web Service by hand with the
+# same settings.
+#
+# The free instance spins down after ~15 minutes without traffic; the first
+# connection afterwards waits on a cold start. For a portfolio demo that is an
+# acceptable trade -- the frontend shows "connecting" meanwhile.
+services:
+  - type: web
+    name: paxos-2pc-payments
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: GOMAXPROCS
+        value: "1"

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -45,6 +46,20 @@ func (h *health) set(active bool) {
 	h.mu.Lock()
 	h.active = active
 	h.mu.Unlock()
+}
+
+// healthGate wraps a handler so that a simulated outage also drops this
+// replica out of Paxos consensus, not just gRPC: peers stop hearing from it
+// and, if it was leader, elect a new one -- the same thing a real crash
+// would cause.
+func healthGate(h *health, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := h.check(); err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // watchConsole lets an operator type "down" or "up" to toggle the simulated

@@ -1,0 +1,655 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paxos + 2PC Payments Control Plane</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%230d1117%22%2F%3E%3Cpath%20d%3D%22M16%208%20L8%2023%20M16%208%20L24%2023%20M8%2023%20L24%2023%22%20stroke%3D%22%2330363d%22%20stroke-width%3D%222%22%20fill%3D%22none%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%228%22%20r%3D%225%22%20fill%3D%22%233fb950%22%2F%3E%3Ccircle%20cx%3D%228%22%20cy%3D%2223%22%20r%3D%224%22%20fill%3D%22%230d1117%22%20stroke%3D%22%2358a6ff%22%20stroke-width%3D%222%22%2F%3E%3Ccircle%20cx%3D%2224%22%20cy%3D%2223%22%20r%3D%224%22%20fill%3D%22%230d1117%22%20stroke%3D%22%2358a6ff%22%20stroke-width%3D%222%22%2F%3E%3C%2Fsvg%3E">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --dim: #8b949e;
+    --accent: #58a6ff;
+    --ok: #3fb950;
+    --bad: #f85149;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  body { display: flex; flex-direction: column; }
+
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 14px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  h1 { margin: 0; font-size: 14px; font-weight: 600; white-space: nowrap; }
+  h1 span { color: var(--dim); font-weight: 400; }
+
+  .spacer { flex: 1 1 auto; }
+
+  input[type=text] {
+    width: min(340px, 52vw);
+    padding: 5px 8px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  input[type=text]:focus { outline: none; border-color: var(--accent); }
+
+  button {
+    padding: 5px 12px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    font: inherit; font-size: 12px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+
+  #state { font-size: 12px; color: var(--dim); white-space: nowrap; }
+  #state.up { color: var(--ok); }
+  #state.down { color: var(--bad); }
+
+  #term { flex: 1 1 auto; min-height: 0; padding: 8px 4px 4px 10px; }
+
+  #how {
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    font-size: 12px;
+  }
+  #how summary {
+    padding: 7px 14px;
+    cursor: pointer;
+    color: var(--text); font-weight: 600;
+    list-style: none; user-select: none;
+  }
+  #how summary::-webkit-details-marker { display: none; }
+  #how summary::before { content: "\25B8"; display: inline-block; width: 14px; color: var(--dim); transition: transform .15s; }
+  #how[open] summary::before { transform: rotate(90deg); }
+  #how summary span { color: var(--dim); font-weight: 400; margin-left: 6px; }
+  #how ol {
+    margin: 0; padding: 0 14px 12px;
+    list-style: none; counter-reset: step;
+    display: grid; gap: 10px;
+    grid-template-columns: repeat(3, 1fr);
+    max-height: 32vh; overflow-y: auto;
+  }
+  @media (min-width: 1100px) { #how ol { grid-template-columns: repeat(6, 1fr); } }
+  @media (max-width: 700px)  { #how ol { grid-template-columns: 1fr; } }
+  #how li {
+    counter-increment: step;
+    padding: 8px 10px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg);
+    color: var(--dim);
+  }
+  #how li b { display: block; color: var(--text); font-weight: 600; margin-bottom: 2px; }
+  #how li b::before { content: counter(step) ". "; color: var(--accent); }
+  #how code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--text);
+  }
+
+  footer {
+    padding: 6px 14px;
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+    font-size: 11px; color: var(--dim);
+    display: flex; gap: 14px; flex-wrap: wrap;
+  }
+  footer code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--text);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>paxos-2pc payments <span>&mdash; control plane</span></h1>
+  <div class="spacer"></div>
+  <button id="tour">run tour</button>
+  <input id="url" type="text" spellcheck="false" aria-label="WebSocket endpoint">
+  <button id="connect">connect</button>
+  <span id="state">offline</span>
+</header>
+
+<div id="term"></div>
+
+<details id="how" open>
+  <summary>Here's how it works <span>click to collapse</span></summary>
+  <ol>
+    <li><b>You get your own cluster</b>
+      Connecting spins up 3 shards &times; 3 replicas of a bank ledger just for you. A majority is 2 of 3. Disconnect and it's gone.</li>
+    <li><b>Start with the tour</b>
+      Type <code>demo</code> or hit <em>run tour</em>. It types each command for you and explains what to watch for. <code>Ctrl-C</code> stops it.</li>
+    <li><b>Writes are Paxos rounds</b>
+      <code>put tushar 100</code> &mdash; the shard leader proposes, a majority accepts, then it commits. Cyan lines are Paxos.</li>
+    <li><b>Cross-shard = two-phase commit</b>
+      <code>transfer tushar varun 25</code> &mdash; each shard votes by reaching quorum; unanimous means commit. Magenta lines are 2PC.</li>
+    <li><b>Break it</b>
+      <code>kill s2n0</code> takes a replica down; <code>partition s2n0 | s2n1 s2n2</code> splits the network. Watch a new leader get elected (yellow).</li>
+    <li><b>Fix it and inspect</b>
+      <code>revive s2n0</code>, <code>heal</code>, then <code>status</code> or <code>datastore</code> to confirm every replica agrees. <code>help</code> lists everything.</li>
+  </ol>
+</details>
+
+<footer>
+  <span><code>status</code> leaders and keys</span>
+  <span><code>put k v</code> / <code>get k</code></span>
+  <span><code>transfer a b n</code></span>
+  <span><code>kill s0n1</code> / <code>revive s0n1</code></span>
+  <span><code>partition s0n0 | s0n1 s0n2</code> / <code>heal</code></span>
+  <span><code>help</code></span>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  // ---------------------------------------------------------------- colours
+  // One colour per protocol level. The set is closed: see docs/control-plane.md.
+  var C = {
+    reset: "\x1b[0m",
+    dim:   "\x1b[2m",
+    bold:  "\x1b[1m",
+    narr:  "\x1b[38;5;180m", // tour narration, distinct from every log level
+    level: {
+      paxos:  "\x1b[36m", // cyan
+      twopc:  "\x1b[35m", // magenta
+      leader: "\x1b[33m", // yellow
+      net:    "\x1b[34m", // blue
+      error:  "\x1b[31m", // red
+      client: "\x1b[32m", // green
+      info:   "\x1b[37m"  // light grey
+    }
+  };
+
+  // ------------------------------------------------------------- terminal
+  var term = new Terminal({
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+    fontSize: 13,
+    convertEol: true,
+    cursorBlink: true,
+    theme: { background: "#0d1117", foreground: "#c9d1d9", cursor: "#58a6ff" }
+  });
+  var fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById("term"));
+  fit.fit();
+  addEventListener("resize", function () { fit.fit(); });
+  // Collapsing the how-it-works panel changes the terminal's height.
+  document.getElementById("how").addEventListener("toggle", function () { fit.fit(); });
+
+  function write(s) { term.write(s); }
+  function line(s) { term.write(s + "\r\n"); }
+
+  // --------------------------------------------------------------- prompt
+  // The prompt is disabled until the server's result frame arrives. That is
+  // the whole point of the protocol's one-result-per-command rule: it is the
+  // only reliable signal that a command is finished.
+  var PROMPT = "\x1b[38;5;39m>\x1b[0m ";
+  var buffer = "";
+  var busy = true;
+  var history = [];
+  var histPos = 0;
+
+  function prompt() {
+    busy = false;
+    buffer = "";
+    write("\r\n" + PROMPT);
+  }
+
+  function redraw() {
+    // \r to column 0, \x1b[K to clear the rest, then reprint.
+    write("\r\x1b[K" + PROMPT + buffer);
+  }
+
+  // ------------------------------------------------------------- websocket
+  var ws = null;
+  var stateEl = document.getElementById("state");
+  var urlEl = document.getElementById("url");
+  var connectEl = document.getElementById("connect");
+  var tourBtn = document.getElementById("tour");
+
+  function setState(text, cls) {
+    stateEl.textContent = text;
+    stateEl.className = cls || "";
+  }
+
+  // defaultURL guesses the endpoint. A page served over HTTPS cannot open a
+  // ws:// socket — browsers block it as mixed content — so the scheme has to
+  // follow the page's own.
+  function defaultURL() {
+    var saved = null;
+    try { saved = localStorage.getItem("backend"); } catch (e) { /* private mode */ }
+    if (saved) return saved;
+
+    var host = location.hostname;
+    if (host === "localhost" || host === "127.0.0.1" || host === "") {
+      return "ws://localhost:8080/ws";
+    }
+    // Served from static hosting: the backend is elsewhere and must be wss://.
+    return "wss://paxos-2pc-payments.onrender.com/ws";
+  }
+
+  // healthURL maps ws[s]://host/ws to http[s]://host/healthz.
+  function healthURL(url) {
+    return url.replace(/^ws/, "http").replace(/\/ws\/?$/, "") + "/healthz";
+  }
+
+  // wake polls /healthz until the backend answers. Free-tier hosts put the
+  // instance to sleep when idle, and a WebSocket handshake sent during the cold
+  // start simply fails, so a first visitor would land on "disconnected" instead
+  // of a cluster. Plain HTTP requests are what wake the instance up.
+  var attempt = 0;
+  async function wake(url, id) {
+    var deadline = Date.now() + 120000;
+    var noted = false;
+    while (id === attempt && Date.now() < deadline) {
+      try {
+        var r = await fetch(healthURL(url), { cache: "no-store" });
+        if (r.ok) return true;
+      } catch (e) { /* asleep, or not there at all */ }
+      if (!noted) {
+        noted = true;
+        setState("waking", "");
+        line(C.dim + "backend is asleep (free tier). waking it up, this can take up to a minute ..." + C.reset);
+      }
+      await sleep(3000);
+    }
+    return false;
+  }
+
+  async function connect() {
+    if (ws) { try { ws.onclose = null; ws.close(); } catch (e) {} ws = null; }
+
+    var url = urlEl.value.trim();
+    if (!url) return;
+    if (location.protocol === "https:" && url.indexOf("ws://") === 0) {
+      line(C.level.error + "this page is served over https, so the backend must be wss:// — browsers block ws:// as mixed content" + C.reset);
+      return;
+    }
+    try { localStorage.setItem("backend", url); } catch (e) { /* private mode */ }
+
+    var id = ++attempt;
+    setState("connecting", "");
+    busy = true;
+    line(C.dim + "connecting to " + url + " ..." + C.reset);
+
+    if (!(await wake(url, id))) {
+      if (id !== attempt) return; // superseded by a newer connect
+      setState("offline", "down");
+      line(C.level.error + "backend did not answer at " + healthURL(url) + ". check the address and hit connect." + C.reset);
+      return;
+    }
+    if (id !== attempt) return;
+
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      setState("offline", "down");
+      line(C.level.error + "could not open a socket: " + e.message + C.reset);
+      return;
+    }
+
+    ws.onopen = function () {
+      setState("connected", "up");
+      // The server sends its banner unprompted and terminates it with a result
+      // frame, so the prompt appears once the cluster has actually elected.
+    };
+
+    ws.onmessage = function (ev) {
+      var f;
+      try { f = JSON.parse(ev.data); } catch (e) { return; }
+
+      if (f.type === "log") {
+        var colour = C.level[f.level] || C.level.info;
+        var tag = f.tag ? (C.dim + pad(f.tag, 8) + C.reset + " ") : "        ";
+        line("  " + tag + colour + f.msg + C.reset);
+        return;
+      }
+
+      if (f.type === "result") {
+        if (f.msg) {
+          var head = f.msg.slice(0, 5);
+          var tint = C.level.info;
+          if (head.indexOf("OK") === 0) tint = C.level.client;
+          else if (head.indexOf("ABORT") === 0) tint = C.level.leader;
+          else if (head.indexOf("ERROR") === 0) tint = C.level.error;
+          line("  " + tint + C.bold + f.msg + C.reset);
+        }
+        prompt();
+        resultWaiters.splice(0).forEach(function (f) { f(); });
+      }
+    };
+
+    ws.onclose = function () {
+      setState("offline", "down");
+      line("\r\n" + C.dim + "disconnected. your cluster is gone; reconnecting builds a fresh one." + C.reset);
+      busy = true;
+      ws = null;
+    };
+
+    ws.onerror = function () {
+      // onclose always follows, and carries the user-visible message.
+      setState("error", "down");
+    };
+  }
+
+  function pad(s, n) {
+    while (s.length < n) s += " ";
+    return s;
+  }
+
+  // awaitResult resolves on the next result frame. The protocol guarantees
+  // exactly one per command, which is what makes this safe to await.
+  var resultWaiters = [];
+  function awaitResult() {
+    return new Promise(function (r) { resultWaiters.push(r); });
+  }
+
+  function send(cmd) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      line("  " + C.level.error + "not connected" + C.reset);
+      prompt();
+      return;
+    }
+    busy = true;
+    ws.send(JSON.stringify({ cmd: cmd }));
+  }
+
+  // ---------------------------------------------------------------- tour
+  // Most people who open this have no idea what to type, and a prompt with no
+  // suggestions is a dead end. The tour types the commands itself and says what
+  // to watch for before each one.
+  //
+  // It is driven from the client rather than the server: every step is an
+  // ordinary command with an ordinary result frame, so the tour cannot see or
+  // do anything a person at the keyboard could not, and Ctrl-C stops it between
+  // steps like anything else.
+  //
+  // The key names are not arbitrary: tushar and ram hash to one shard, varun to
+  // another. That is what makes step 4 a single Paxos round and step 6 a genuine
+  // two-phase commit. Renaming them without checking ShardFor breaks the story
+  // the narration tells.
+  var TOUR = [
+    { say: "a fresh cluster: 3 shards, 3 replicas each. a majority is 2.",
+      cmd: "status" },
+
+    { say: "every write is one paxos round. the leader proposes, a majority accepts, then it commits.",
+      cmd: "put tushar 100" },
+
+    { cmd: "put ram 50" },
+
+    { say: "tushar and ram hashed to the same shard, so one log entry moves the money. no 2pc needed.",
+      cmd: "transfer tushar ram 30" },
+
+    { say: "varun hashed to a different shard.",
+      cmd: "put varun 40" },
+
+    { say: "so this transfer has to cross shards. each side runs its own paxos round, and reaching quorum IS that shard's vote. unanimous means commit.",
+      cmd: "transfer tushar varun 25" },
+
+    { say: "every replica holds the same entries, in the same order, under the same ballots.",
+      cmd: "datastore" },
+
+    { say: "now break it. kill the leader of tushar's shard.",
+      cmd: "kill s2n0" },
+
+    { say: "a new leader was elected at a higher ballot. there is no separate election protocol here - electing IS the paxos prepare phase, and it runs once per leader, not once per write.",
+      cmd: "transfer tushar varun 10" },
+
+    { say: "two of three is still a majority, so that worked. kill a second replica.",
+      cmd: "kill s2n1" },
+
+    { say: "one replica left out of three. it holds all the data and it still refuses, because committing alone is how you lose money.",
+      cmd: "put tushar 999" },
+
+    { say: "bring them back. a revived replica returns with the log it died with.",
+      cmd: "revive s2n0" },
+
+    { cmd: "revive s2n1" },
+
+    { say: "now split the network instead of killing anything. all three replicas stay alive - they just cannot reach each other.",
+      cmd: "partition s2n0 | s2n1 | s2n2" },
+
+    { say: "3 of 3 alive, and no leader. liveness is not reachability, and a dead-node count cannot express this.",
+      cmd: "status" },
+
+    { say: "heal the split and the shard elects again on its own.",
+      cmd: "heal" },
+
+    { say: "that's the tour. the cluster is yours - break it however you like.",
+      cmd: "status" }
+  ];
+
+  var touring = false;
+
+  // wrapped breaks narration on word boundaries. xterm wraps on its own, but it
+  // wraps mid-word, which reads badly in prose and worse in a screenshot.
+  function wrapped(text) {
+    var width = Math.max(40, Math.min(term.cols - 4, 96));
+    var out = [];
+    var current = "";
+    text.split(" ").forEach(function (word) {
+      if (current === "") {
+        current = word;
+      } else if (current.length + 1 + word.length <= width) {
+        current += " " + word;
+      } else {
+        out.push(current);
+        current = word;
+      }
+    });
+    if (current !== "") out.push(current);
+    return out;
+  }
+
+  function sleep(ms) {
+    return new Promise(function (r) { setTimeout(r, ms); });
+  }
+
+  // typeOut echoes a command a character at a time. Purely cosmetic, but a line
+  // that appears all at once does not read as somebody using the thing.
+  async function typeOut(text) {
+    for (var i = 0; i < text.length; i++) {
+      if (!touring) return;
+      write(text[i]);
+      await sleep(18);
+    }
+  }
+
+  async function runTour() {
+    if (touring) { stopTour("stopped."); return; }
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      line("  " + C.level.error + "not connected" + C.reset);
+      return;
+    }
+
+    touring = true;
+    tourBtn.textContent = "stop tour";
+
+    for (var i = 0; i < TOUR.length; i++) {
+      if (!touring) break;
+      var step = TOUR[i];
+
+      if (step.say) {
+        // Wipe the idle prompt before narrating, so the tour does not leave a
+        // trail of bare "> " lines behind each step.
+        write("\r\x1b[K");
+        line("");
+        wrapped(step.say).forEach(function (l) {
+          line(C.narr + "  " + l + C.reset);
+        });
+        line("");
+        write(PROMPT);
+        await sleep(1100);
+      }
+      if (!touring || !ws || ws.readyState !== WebSocket.OPEN) break;
+
+      // Wait out any command still running before typing the next one.
+      while (busy && touring) await sleep(50);
+      if (!touring) break;
+
+      await typeOut(step.cmd);
+      if (!touring) break;
+
+      write("\r\n");
+      var done = awaitResult();
+      send(step.cmd);
+      await done;
+      await sleep(550);
+    }
+
+    if (touring) stopTour(null);
+  }
+
+  function stopTour(msg) {
+    touring = false;
+    tourBtn.textContent = "run tour";
+    if (msg) {
+      line("");
+      line(C.narr + "  " + msg + C.reset);
+      if (!busy) write("\r\n" + PROMPT);
+    }
+  }
+
+  // ----------------------------------------------------------- input keys
+  // Incoming keystrokes are queued rather than handled inline. A command is in
+  // flight until its result frame arrives, and anything typed or pasted while
+  // it runs has to wait rather than be dropped: pasting three lines should run
+  // three commands, not one.
+  var pending = "";
+
+  term.onData(function (data) {
+    pending += data;
+    drain();
+  });
+
+  function drain() {
+    while (pending.length > 0) {
+      if (busy) return;
+
+      var ch = pending[0];
+      pending = pending.slice(1);
+
+      // While the tour is driving, the keyboard does one thing: stop it.
+      if (touring) {
+        if (ch === "") {
+          pending = "";
+          stopTour("tour stopped.");
+        }
+        continue;
+      }
+
+      // Enter. Terminals send CR; pasted text and some input methods send LF.
+      if (ch === "\r" || ch === "\n") {
+        var cmd = buffer.trim();
+        write("\r\n");
+        if (!cmd) { prompt(); continue; }
+
+        history.push(cmd);
+        histPos = history.length;
+
+        // clear is client-side. The server accepts and ignores it, but doing it
+        // here keeps the screen responsive even when offline.
+        if (cmd === "clear") {
+          term.clear();
+          prompt();
+          continue;
+        }
+        if (cmd === "demo") {
+          prompt();
+          runTour();
+          continue;
+        }
+        send(cmd);
+        continue;
+      }
+
+      // Backspace / delete
+      if (ch === "\x7f" || ch === "\b") {
+        if (buffer.length > 0) {
+          buffer = buffer.slice(0, -1);
+          write("\b \b");
+        }
+        continue;
+      }
+
+      // Ctrl-C abandons the line and anything queued behind it.
+      if (ch === "\x03") {
+        buffer = "";
+        pending = "";
+        write("^C");
+        prompt();
+        continue;
+      }
+
+      // Ctrl-L
+      if (ch === "\x0c") {
+        term.clear();
+        redraw();
+        continue;
+      }
+
+      // Escape sequences: history on up/down, ignore the rest.
+      if (ch === "\x1b" && pending[0] === "[") {
+        var code = pending[1];
+        pending = pending.slice(2);
+        if (code === "A" && histPos > 0) {
+          histPos--;
+          buffer = history[histPos];
+          redraw();
+        } else if (code === "B") {
+          histPos++;
+          if (histPos >= history.length) {
+            histPos = history.length;
+            buffer = "";
+          } else {
+            buffer = history[histPos];
+          }
+          redraw();
+        }
+        continue;
+      }
+
+      // Printable
+      if (ch >= " " && ch <= "~") {
+        buffer += ch;
+        write(ch);
+      }
+    }
+  }
+
+  // ------------------------------------------------------------- startup
+  urlEl.value = defaultURL();
+  connectEl.addEventListener("click", connect);
+  tourBtn.addEventListener("click", runTour);
+  urlEl.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") connect();
+  });
+
+  line(C.bold + "paxos-2pc payments control plane" + C.reset);
+  line(C.dim + "3 shards x 3 replicas of an integer-balance ledger. multi-paxos per shard, two-phase commit across them." + C.reset);
+  line(C.dim + "every connection gets its own cluster. break it however you like." + C.reset);
+  line("");
+  line(C.narr + "new here? type " + C.bold + "demo" + C.reset + C.narr + " (or hit \"run tour\") for a guided walkthrough." + C.reset);
+  line(C.dim + "or drive it yourself:  put tushar 100  |  kill s0n0  |  partition s0n0 | s0n1 s0n2  |  status" + C.reset);
+  line("");
+
+  connect();
+  term.focus();
+})();
+</script>
+</body>
+</html>

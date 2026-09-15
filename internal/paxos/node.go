@@ -1,6 +1,7 @@
 package paxos
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math/rand"
@@ -67,6 +68,8 @@ type Node struct {
 	leader     NodeID    // best guess at the current leader, for redirects
 	electionAt time.Time // campaign if nothing is heard from a leader by then
 	nextSlot   uint64    // leader only: the next slot to hand out
+	lastQuorum time.Time // leader only: when a majority last answered a heartbeat
+	catchingUp bool      // a catch-up fetch is already in flight
 
 	committed    map[uint64]bool
 	appliedIndex uint64
@@ -139,6 +142,19 @@ func (n *Node) AppliedIndex() uint64 {
 	return n.appliedIndex
 }
 
+// Promised is the highest ballot this replica has promised. Its Num is the
+// closest thing Multi-Paxos has to a Raft term.
+func (n *Node) Promised() Ballot { return n.log.Promised() }
+
+// Log exposes the replica's accepted entries, for inspection only.
+func (n *Node) Log() *Log { return n.log }
+
+// Campaign runs an election now instead of waiting for the timer. It is how an
+// operator (or a bootstrap) nudges a group to elect without paying a full
+// election timeout; it is safe to call at any time, because winning still
+// requires a majority of promises.
+func (n *Node) Campaign() { n.campaign() }
+
 // quorum is the number of replicas needed for a majority.
 func (n *Node) quorum() int { return majority(len(n.peers)) }
 
@@ -197,6 +213,27 @@ func (n *Node) campaign() {
 	}
 	n.role = Candidate
 	n.mu.Unlock()
+
+	// Probe before bumping the ballot. A replica that is crashed-off or on the
+	// minority side of a partition would otherwise campaign every timeout,
+	// inflating its ballot each time, and on rejoining it would unseat a
+	// perfectly healthy leader with that inflated number. Refusing to campaign
+	// without a reachable majority is a cheap form of Raft's pre-vote.
+	if !n.canReachQuorum() {
+		n.stepDown(Ballot{})
+		return
+	}
+
+	// The probe takes a round trip, and another replica may have won an
+	// election meanwhile: any prepare, accept or heartbeat from it resets this
+	// replica to follower. Campaigning anyway would unseat a leader that has
+	// only just been elected, possibly mid-write.
+	n.mu.Lock()
+	stillCandidate := n.role == Candidate
+	n.mu.Unlock()
+	if !stillCandidate {
+		return
+	}
 
 	next := Ballot{Num: n.log.Promised().Num + 1, Node: n.id}
 	if err := n.log.Promise(next); err != nil {
@@ -265,6 +302,7 @@ func (n *Node) becomeLeader(b Ballot, gathered []Entry, first uint64) {
 	n.role = Leader
 	n.leader = n.id
 	n.ballot = b
+	n.lastQuorum = time.Now()
 	n.resetElectionLocked()
 	n.nextSlot = maxSlot + 1
 	if n.nextSlot < first {
@@ -325,6 +363,12 @@ func (n *Node) Propose(ctx context.Context, command []byte) (any, error) {
 		n.mu.Lock()
 		delete(n.results, slot)
 		n.mu.Unlock()
+		// The slot was handed out but not chosen, so this leader's log now has
+		// a hole it cannot fill on its own: the apply loop runs contiguously,
+		// and every later proposal would commit and then wait forever behind
+		// it. Stepping down hands the hole to the next election, whose
+		// recovery pass re-proposes it (or fills it with a no-op).
+		n.stepDown(Ballot{})
 		return nil, err
 	}
 
@@ -452,6 +496,8 @@ func (n *Node) Handle(ctx context.Context, msg Message) Message {
 		return n.handleCommit(msg)
 	case KindCatchUp:
 		return n.handleCatchUp(msg)
+	case KindPing:
+		return n.handlePing()
 	}
 	return Message{Kind: msg.Kind, From: n.id, OK: false}
 }
@@ -545,24 +591,39 @@ func (n *Node) handleCommit(msg Message) Message {
 	n.leader = msg.From
 	n.resetElectionLocked()
 	applied := n.appliedIndex
+	fetch := msg.CommitIndex > applied && !n.catchingUp
+	if fetch {
+		n.catchingUp = true
+	}
 	n.mu.Unlock()
 
-	if msg.CommitIndex > applied {
-		slots := make([]uint64, 0, msg.CommitIndex-applied)
-		for s := applied + 1; s <= msg.CommitIndex; s++ {
-			slots = append(slots, s)
-		}
-		n.markCommitted(slots...)
-
-		// If the leader has committed past what we hold, fetch the gap.
-		if n.log.MaxSlot() < msg.CommitIndex {
-			go n.catchUp(msg.From, applied+1)
-		}
+	// Slots the leader has committed are learned by fetching the leader's own
+	// entries for them, never by trusting whatever this replica holds locally.
+	// A replica can hold a value for a slot that was accepted but never chosen
+	// -- an old leader cut off in a minority does exactly that -- and marking
+	// such a slot committed would apply the wrong command and diverge.
+	if fetch {
+		go n.catchUp(msg.From, applied+1, msg.CommitIndex)
 	}
 
 	reply.OK = true
 	reply.Ballot = msg.Ballot
 	return reply
+}
+
+// handlePing answers a pre-campaign probe. A probe means a peer is about to
+// run PREPARE, so it pushes this replica's own election timer back exactly as
+// the PREPARE would. Without that, the round trip the probe adds is a window in
+// which a second replica's timer fires too, and two candidates duel: a write
+// accepted under the losing ballot is reported as failed yet may still be
+// chosen, and a caller that retries it applies it twice.
+func (n *Node) handlePing() Message {
+	n.mu.Lock()
+	if n.role != Leader {
+		n.resetElectionLocked()
+	}
+	n.mu.Unlock()
+	return Message{Kind: KindPing, From: n.id, OK: true, Ballot: n.log.Promised()}
 }
 
 // handleCatchUp serves entries to a replica that has fallen behind.
@@ -575,9 +636,20 @@ func (n *Node) handleCatchUp(msg Message) Message {
 	}
 }
 
-// catchUp pulls missing entries from the leader and stores them, so the
-// apply loop can move past the gap.
-func (n *Node) catchUp(from NodeID, first uint64) {
+// catchUp pulls the leader's entries for slots first..commitIndex, adopts them
+// over anything held locally, and only then marks them committed.
+//
+// Overwriting is safe because the leader has applied every one of these
+// slots, so its entry for each is the chosen value -- the only value that
+// could ever be chosen there. Whatever this replica held for the slot, if it
+// differs, was accepted under a ballot that lost.
+func (n *Node) catchUp(from NodeID, first, commitIndex uint64) {
+	defer func() {
+		n.mu.Lock()
+		n.catchingUp = false
+		n.mu.Unlock()
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), n.cfg.RoundTimeout*2)
 	defer cancel()
 
@@ -585,17 +657,38 @@ func (n *Node) catchUp(from NodeID, first uint64) {
 	if err != nil || !reply.OK {
 		return
 	}
+
+	chosen := make(map[uint64]Entry, len(reply.Entries))
 	for _, e := range reply.Entries {
-		if _, have := n.log.Get(e.Slot); have {
-			continue
-		}
-		_ = n.log.Accept(e)
+		chosen[e.Slot] = e
 	}
 
-	select {
-	case n.applyC <- struct{}{}:
-	default:
+	var slots []uint64
+	for slot := first; slot <= commitIndex; slot++ {
+		e, ok := chosen[slot]
+		if !ok {
+			break // the leader cannot serve this one; stop at the gap
+		}
+		if local, have := n.log.Get(slot); !have || local.Ballot != e.Ballot || !bytes.Equal(local.Command, e.Command) {
+			if err := n.log.Accept(e); err != nil {
+				break
+			}
+		}
+		slots = append(slots, slot)
 	}
+	if len(slots) > 0 {
+		n.markCommitted(slots...)
+	}
+}
+
+// canReachQuorum pings the group and reports whether a majority, counting this
+// replica, answered.
+func (n *Node) canReachQuorum() bool {
+	if n.quorum() <= 1 {
+		return true
+	}
+	replies := n.broadcast(Message{Kind: KindPing, From: n.id})
+	return len(replies)+1 >= n.quorum()
 }
 
 // broadcastCommit is the leader's periodic heartbeat.
@@ -613,11 +706,31 @@ func (n *Node) broadcastCommit() {
 
 	// A peer refusing our heartbeat with a higher ballot means the group has
 	// moved on without us -- stop acting as leader immediately.
+	acks := 1 // this replica
 	for _, r := range replies {
 		if !r.OK && b.Less(r.Ballot) {
 			n.stepDown(r.Ballot)
 			return
 		}
+		if r.OK {
+			acks++
+		}
+	}
+
+	// Check-quorum: a leader that has not heard from a majority for a whole
+	// election timeout is on the wrong side of a partition. It could not commit
+	// anything anyway, and stepping down stops it advertising itself as
+	// leader to anyone still able to reach it.
+	n.mu.Lock()
+	if acks >= n.quorum() {
+		n.lastQuorum = time.Now()
+		n.mu.Unlock()
+		return
+	}
+	lost := n.role == Leader && time.Since(n.lastQuorum) > n.cfg.ElectionTimeout
+	n.mu.Unlock()
+	if lost {
+		n.stepDown(Ballot{})
 	}
 }
 

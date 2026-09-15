@@ -1,0 +1,10 @@
+.git
+certs
+data
+frontend
+docs
+*.exe
+*.txt
+*.pdf
+*.bat
+*.md

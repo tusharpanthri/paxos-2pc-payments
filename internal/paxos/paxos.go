@@ -105,6 +105,7 @@ const (
 	KindAccepted MessageKind = "accepted" // phase 2 response
 	KindCommit   MessageKind = "commit"   // leader heartbeat + commit index
 	KindCatchUp  MessageKind = "catchup"  // follower asks for entries it missed
+	KindPing     MessageKind = "ping"     // reachability probe before campaigning
 )
 
 // Message is the single envelope for every protocol exchange. One struct

@@ -70,6 +70,19 @@ func OpenLog(dir string, id NodeID) (*Log, error) {
 	return l, nil
 }
 
+// NewMemLog returns a Log that keeps everything in memory. It is for replicas
+// whose lifetime is the process's -- the browser control plane builds a fresh
+// cluster per connection and has no use for a disk. A process crash loses a
+// MemLog, so it gives none of the durability guarantees described above; a
+// replica "killed" by fault injection keeps its MemLog, which is what makes
+// revive meaningful.
+func NewMemLog() *Log {
+	return &Log{entries: make(map[uint64]Entry)}
+}
+
+// durable reports whether this log writes to disk. Callers must hold l.mu.
+func (l *Log) durable() bool { return l.statePath != "" }
+
 // replay reads every accepted entry back into memory.
 func (l *Log) replay(path string) error {
 	f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, 0o644)
@@ -130,6 +143,11 @@ func (l *Log) Promise(b Ballot) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	if !l.durable() {
+		l.promised = b
+		return nil
+	}
+
 	raw, err := json.Marshal(persistedState{Promised: b})
 	if err != nil {
 		return err
@@ -165,15 +183,20 @@ func (l *Log) Accept(e Entry) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	raw, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
-	if _, err := l.entryF.Write(append(raw, '\n')); err != nil {
-		return err
-	}
-	if err := l.entryF.Sync(); err != nil {
-		return err
+	if l.durable() {
+		raw, err := json.Marshal(e)
+		if err != nil {
+			return err
+		}
+		if l.entryF == nil {
+			return fmt.Errorf("paxos: log is closed")
+		}
+		if _, err := l.entryF.Write(append(raw, '\n')); err != nil {
+			return err
+		}
+		if err := l.entryF.Sync(); err != nil {
+			return err
+		}
 	}
 
 	l.entries[e.Slot] = e

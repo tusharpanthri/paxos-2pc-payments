@@ -35,15 +35,16 @@ import (
 const rpcTimeout = 10 * time.Second
 
 type config struct {
-	username  string
-	password  string
-	accountID string
-	bankName  string
-	gateway   string
-	txnIDAddr string
-	certsDir  string
-	dataDir   string
-	register  bool
+	username    string
+	password    string
+	accountID   string
+	bankName    string
+	gateway     string
+	txnIDAddr   string
+	certsDir    string
+	dataDir     string
+	register    bool
+	replicaData string
 }
 
 func parseFlags() config {
@@ -57,6 +58,7 @@ func parseFlags() config {
 	flag.StringVar(&c.certsDir, "certs", "certs", "directory holding TLS certificates")
 	flag.StringVar(&c.dataDir, "data", ".", "directory holding data files")
 	flag.BoolVar(&c.register, "register", false, "seed this account at the bank before starting")
+	flag.StringVar(&c.replicaData, "replica-data", "", "comma-separated extra data directories to also seed (one per other replica, for a Paxos-replicated bank)")
 	flag.Parse()
 	return c
 }
@@ -75,7 +77,11 @@ func run(cfg config) error {
 	log.Printf(logx.Cyan+"[startup] %s, account %s at %s"+logx.Reset, cfg.username, cfg.accountID, cfg.bankName)
 
 	if cfg.register {
-		if err := seedBankAccount(cfg.dataDir, cfg.accountID, cfg.username, cfg.password, cfg.bankName); err != nil {
+		var extraDirs []string
+		if cfg.replicaData != "" {
+			extraDirs = strings.Split(cfg.replicaData, ",")
+		}
+		if err := seedBankAccount(cfg.dataDir, cfg.accountID, cfg.username, cfg.password, cfg.bankName, extraDirs); err != nil {
 			return fmt.Errorf("seed bank account: %w", err)
 		}
 	}

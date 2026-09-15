@@ -1,0 +1,28 @@
+# fly.io alternative to Render: `fly launch --no-deploy --copy-config`, then `fly deploy`.
+#
+# Machines stop when idle and start on the next request, which keeps usage
+# minimal. Cluster state is in memory, so a stopped machine forgets everything
+# -- already true of this demo, since every connection gets a fresh cluster.
+app = "paxos-2pc-payments"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "5s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
