@@ -19,11 +19,10 @@
   }
   * { box-sizing: border-box; }
   html, body {
-    margin: 0; height: 100%;
+    margin: 0;
     background: var(--bg); color: var(--text);
     font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
   }
-  body { display: flex; flex-direction: column; }
 
   header {
     display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
@@ -57,7 +56,33 @@
   #state.up { color: var(--ok); }
   #state.down { color: var(--bad); }
 
-  #term { flex: 1 1 auto; min-height: 0; padding: 8px 4px 4px 10px; }
+  /* Page order, top to bottom: terminal, how it works, cluster map. The page
+     scrolls; the terminal keeps a fixed height so xterm can size itself. */
+  #term { height: 62vh; min-height: 340px; padding: 8px 4px 4px 10px; }
+
+  #map {
+    border-top: 1px solid var(--border);
+    background: var(--bg);
+  }
+  #map .bar {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px; font-weight: 600;
+  }
+  #map .bar span { color: var(--dim); font-weight: 400; font-size: 11px; }
+  #map svg { width: 100%; max-width: 1040px; height: auto; display: block; margin: 0 auto; padding: 6px 0; }
+  #map.stale svg { opacity: .35; }
+  #map .legend {
+    display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: center;
+    padding: 6px 12px 8px;
+    border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--dim);
+  }
+  #map .legend i {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 4px; vertical-align: 0;
+  }
 
   #how {
     border-top: 1px solid var(--border);
@@ -79,7 +104,6 @@
     list-style: none; counter-reset: step;
     display: grid; gap: 10px;
     grid-template-columns: repeat(3, 1fr);
-    max-height: 32vh; overflow-y: auto;
   }
   @media (min-width: 1100px) { #how ol { grid-template-columns: repeat(6, 1fr); } }
   @media (max-width: 700px)  { #how ol { grid-template-columns: 1fr; } }
@@ -113,7 +137,7 @@
 <body>
 
 <header>
-  <h1>paxos-2pc payments <span>&mdash; control plane</span></h1>
+  <h1>paxos-2pc payments <span>/ control plane</span></h1>
   <div class="spacer"></div>
   <button id="tour">run tour</button>
   <input id="url" type="text" spellcheck="false" aria-label="WebSocket endpoint">
@@ -131,15 +155,28 @@
     <li><b>Start with the tour</b>
       Type <code>demo</code> or hit <em>run tour</em>. It types each command for you and explains what to watch for. <code>Ctrl-C</code> stops it.</li>
     <li><b>Writes are Paxos rounds</b>
-      <code>put tushar 100</code> &mdash; the shard leader proposes, a majority accepts, then it commits. Cyan lines are Paxos.</li>
+      Try <code>put tushar 100</code>. The shard leader proposes, a majority accepts, then it commits. Cyan lines are Paxos.</li>
     <li><b>Cross-shard = two-phase commit</b>
-      <code>transfer tushar varun 25</code> &mdash; each shard votes by reaching quorum; unanimous means commit. Magenta lines are 2PC.</li>
+      Try <code>transfer tushar varun 25</code>. Each shard votes by reaching quorum, and it only commits if every shard says yes. Magenta lines are 2PC.</li>
     <li><b>Break it</b>
       <code>kill s2n0</code> takes a replica down; <code>partition s2n0 | s2n1 s2n2</code> splits the network. Watch a new leader get elected (yellow).</li>
     <li><b>Fix it and inspect</b>
       <code>revive s2n0</code>, <code>heal</code>, then <code>status</code> or <code>datastore</code> to confirm every replica agrees. <code>help</code> lists everything.</li>
   </ol>
 </details>
+
+<section id="map" class="stale" aria-label="Live cluster map">
+  <div class="bar">cluster map <span id="mapnote">waiting for cluster&hellip;</span></div>
+  <svg id="mapsvg" viewBox="0 0 1000 260" preserveAspectRatio="xMidYMin meet" role="img" aria-label="Shards, replicas and the messages between them"></svg>
+  <div class="legend">
+    <span>&#9819; leader</span>
+    <span>&#10005; down</span>
+    <span><i style="background:#39c5cf"></i>paxos</span>
+    <span><i style="background:#bc8cff"></i>2pc</span>
+    <span><i style="background:#d29922"></i>reject</span>
+    <span><i style="background:#f85149"></i>dropped</span>
+  </div>
+</section>
 
 <footer>
   <span><code>status</code> leaders and keys</span>
@@ -214,6 +251,214 @@
     write("\r\x1b[K" + PROMPT + buffer);
   }
 
+  // ------------------------------------------------------------------ map
+  // The map is drawn entirely from the server's state frames, and animated from
+  // the from/to fields on log frames. It never guesses state from log text, so
+  // it cannot disagree with what the cluster reports.
+  var SVGNS = "http://www.w3.org/2000/svg";
+  var mapEl = document.getElementById("map");
+  var mapSvg = document.getElementById("mapsvg");
+  var mapNote = document.getElementById("mapnote");
+  var pos = {};         // id -> {x, y}: replicas, "2pc", and shards ("s0")
+  var lastState = null;
+  var renderedWide = null;
+
+  // Switch between the wide and stacked layouts when the window crosses over.
+  addEventListener("resize", function () {
+    if (lastState && (mapEl.clientWidth >= 720) !== renderedWide) renderMap(lastState);
+  });
+
+  var MAP = {
+    w: 400, boxX: 92, boxW: 296, boxH: 132, gap: 12, top: 12, r: 14,
+    ink: "#c9d1d9", dim: "#8b949e", line: "#30363d", panel: "#161b22",
+    leader: "#d29922", follower: "#58a6ff", dead: "#484f58", bad: "#f85149",
+    groups: ["#58a6ff", "#3fb950", "#db61a2", "#e3b341"]
+  };
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  // groupOf maps each replica to its partition group. Replicas named in no
+  // group form one more group together, which mirrors the server's rule.
+  function groupsFor(st) {
+    var g = {};
+    if (!st.partitions || st.partitions.length === 0) return null;
+    st.partitions.forEach(function (members, i) {
+      members.forEach(function (id) { g[id] = i; });
+    });
+    st.shards.forEach(function (sh) {
+      sh.nodes.forEach(function (n) {
+        if (!(n.id in g)) g[n.id] = st.partitions.length;
+      });
+    });
+    return g;
+  }
+
+  function renderMap(st) {
+    lastState = st;
+    mapEl.classList.remove("stale");
+    var M = MAP, out = [], p = {};
+    var groups = groupsFor(st);
+    var n = st.shards.length;
+
+    // Wide screens: coordinator on top, shards side by side. Narrow screens:
+    // coordinator on the left, shards stacked, so nothing shrinks to unreadable.
+    var wide = mapEl.clientWidth >= 720;
+    var W, h;
+    if (wide) {
+      W = M.top * 2 + n * M.boxW + (n - 1) * M.gap * 2;
+      h = 84 + M.boxH + M.top;
+      p["2pc"] = { x: W / 2, y: 30 };
+    } else {
+      W = M.w;
+      h = M.top * 2 + n * M.boxH + (n - 1) * M.gap;
+      p["2pc"] = { x: 42, y: h / 2 };
+    }
+    mapSvg.setAttribute("viewBox", "0 0 " + W + " " + h);
+    mapSvg.style.maxWidth = wide ? Math.min(W * 1.15, 1100) + "px" : "520px";
+    renderedWide = wide;
+
+    var led = 0;
+    st.shards.forEach(function (sh) { if (sh.leader) led++; });
+    mapNote.textContent = led + "/" + n + " shards have a leader" + (groups ? " · network split" : "");
+
+    st.shards.forEach(function (sh, i) {
+      var bx = wide ? M.top + i * (M.boxW + M.gap * 2) : M.boxX;
+      var y = wide ? 84 : M.top + i * (M.boxH + M.gap);
+      var name = "s" + sh.shard;
+      p[name] = { x: bx + M.boxW / 2, y: y + M.boxH / 2 };
+
+      // Spoke from the coordinator to the shard.
+      var c0 = p["2pc"], d;
+      if (wide) {
+        d = "M" + c0.x + " " + (c0.y + 20) + " C " + c0.x + " 64, " + (bx + M.boxW / 2) + " 58, " + (bx + M.boxW / 2) + " " + y;
+      } else {
+        d = "M" + (c0.x + 26) + " " + c0.y + " C 78 " + c0.y + ", 78 " + (y + M.boxH / 2) + ", " + bx + " " + (y + M.boxH / 2);
+      }
+      out.push('<path d="' + d + '" fill="none" stroke="' + M.line + '" stroke-width="1"/>');
+
+      var alive = sh.nodes.filter(function (x) { return x.alive; }).length;
+      out.push('<rect x="' + bx + '" y="' + y + '" width="' + M.boxW + '" height="' + M.boxH + '" rx="8" fill="' + M.panel + '" stroke="' +
+        (sh.leader ? M.line : M.bad) + '"/>');
+      out.push('<text x="' + (bx + 10) + '" y="' + (y + 17) + '" font-size="12" font-weight="600" fill="' + M.ink + '">' + name + '</text>');
+      out.push('<text x="' + (bx + 32) + '" y="' + (y + 17) + '" font-size="11" fill="' + (sh.leader ? M.dim : M.bad) + '">' +
+        (sh.leader ? "leader " + esc(sh.leader) + " · term " + sh.term : "no leader · writes refused") +
+        " · " + alive + "/" + sh.nodes.length + " up</text>");
+
+      // Replicas on a ring, so any replica count lays out sensibly.
+      var cx = bx + 74, cy = y + 84, ring = 30;
+      // Group badges only matter in a shard the split actually cuts through.
+      var shardSplit = groups && sh.nodes.some(function (x) { return groups[x.id] !== groups[sh.nodes[0].id]; });
+      sh.nodes.forEach(function (node, j) {
+        var a = -Math.PI / 2 + (2 * Math.PI * j) / sh.nodes.length;
+        p[node.id] = { x: cx + ring * Math.cos(a) * 1.25, y: cy + ring * Math.sin(a) };
+      });
+
+      // Links between replicas: solid when they can talk, dashed red across a
+      // partition, faint when either end is down.
+      for (var a1 = 0; a1 < sh.nodes.length; a1++) {
+        for (var b1 = a1 + 1; b1 < sh.nodes.length; b1++) {
+          var A = sh.nodes[a1], B = sh.nodes[b1], pa = p[A.id], pb = p[B.id];
+          var split = groups && groups[A.id] !== groups[B.id];
+          var down = !A.alive || !B.alive;
+          out.push('<line x1="' + pa.x + '" y1="' + pa.y + '" x2="' + pb.x + '" y2="' + pb.y + '" stroke="' +
+            (split ? M.bad : M.line) + '" stroke-width="' + (split ? 1.5 : 1) + '"' +
+            (split ? ' stroke-dasharray="4 3"' : '') + (down ? ' opacity=".35"' : '') + '/>');
+        }
+      }
+
+      sh.nodes.forEach(function (node) {
+        var q = p[node.id], isLeader = node.id === sh.leader;
+        var stroke = !node.alive ? M.dead : isLeader ? M.leader : M.follower;
+        var fill = !node.alive ? "#21262d" : "#0d1117";
+        out.push('<circle cx="' + q.x + '" cy="' + q.y + '" r="' + M.r + '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="' + (isLeader ? 3 : 2) + '"/>');
+        if (!node.alive) {
+          out.push('<text x="' + q.x + '" y="' + (q.y + 4) + '" text-anchor="middle" font-size="13" fill="' + M.dead + '">✕</text>');
+        } else {
+          out.push('<text x="' + q.x + '" y="' + (q.y + 4) + '" text-anchor="middle" font-size="10" fill="' + M.ink + '">' + esc(node.id.replace(/^s\d+/, "")) + '</text>');
+        }
+        if (isLeader) {
+          out.push('<text x="' + q.x + '" y="' + (q.y - M.r - 3) + '" text-anchor="middle" font-size="13" fill="' + M.leader + '">♛</text>');
+        }
+        if (shardSplit) {
+          var gi = groups[node.id];
+          out.push('<text x="' + q.x + '" y="' + (q.y + M.r + 11) + '" text-anchor="middle" font-size="9" font-weight="600" fill="' + M.groups[gi % M.groups.length] + '">g' + (gi + 1) + '</text>');
+        }
+      });
+
+      // Accounts that live on this shard.
+      var accts = (st.accounts || []).filter(function (x) { return x.shard === sh.shard; });
+      var ax = bx + 160, ay = y + 48;
+      if (accts.length === 0) {
+        out.push('<text x="' + ax + '" y="' + ay + '" font-size="11" fill="' + M.dim + '">no accounts</text>');
+      }
+      accts.slice(0, 4).forEach(function (acct, k) {
+        out.push('<text x="' + ax + '" y="' + (ay + k * 18) + '" font-size="11" font-family="ui-monospace, Consolas, monospace" fill="' + M.ink + '">' +
+          esc(acct.key.length > 9 ? acct.key.slice(0, 8) + "…" : acct.key) +
+          '<tspan fill="#3fb950"> ' + acct.balance + '</tspan>' +
+          (acct.locked_by ? '<tspan fill="' + M.leader + '"> 🔒' + esc(acct.locked_by) + '</tspan>' : '') + '</text>');
+      });
+      if (accts.length > 4) {
+        out.push('<text x="' + ax + '" y="' + (ay + 4 * 18) + '" font-size="10" fill="' + M.dim + '">+' + (accts.length - 4) + ' more</text>');
+      }
+    });
+
+    // Coordinator last, so spokes sit underneath it.
+    var c = p["2pc"];
+    out.push('<rect x="' + (c.x - 26) + '" y="' + (c.y - 20) + '" width="52" height="40" rx="8" fill="' + M.panel + '" stroke="#bc8cff" stroke-width="1.5"/>');
+    out.push('<text x="' + c.x + '" y="' + (c.y - 2) + '" text-anchor="middle" font-size="11" font-weight="600" fill="#bc8cff">2PC</text>');
+    out.push('<text x="' + c.x + '" y="' + (c.y + 11) + '" text-anchor="middle" font-size="9" fill="' + M.dim + '">coord</text>');
+
+    out.push('<g id="pulses"></g>');
+    mapSvg.innerHTML = out.join("");
+    pos = p;
+  }
+
+  // anchor resolves a message endpoint. A shard name means its leader, since
+  // that is who the coordinator actually talks to.
+  function anchor(id) {
+    if (/^s\d+$/.test(id) && lastState) {
+      var sh = lastState.shards.filter(function (s) { return "s" + s.shard === id; })[0];
+      if (sh && sh.leader && pos[sh.leader]) return pos[sh.leader];
+    }
+    return pos[id];
+  }
+
+  function pulseColour(f) {
+    if (f.kind === "drop" || f.kind === "vote-no") return MAP.bad;
+    if (f.kind === "reject") return MAP.leader;
+    if (f.from === "2pc" || f.to === "2pc") return "#bc8cff";
+    return "#39c5cf";
+  }
+
+  // pulse sends a dot along from -> to. A dropped message stops halfway and
+  // fades, which is what a partition or dead replica actually does to it.
+  function pulse(f) {
+    var a = anchor(f.from), b = anchor(f.to);
+    var layer = document.getElementById("pulses");
+    if (!a || !b || !layer || document.hidden) return;
+    var dot = document.createElementNS(SVGNS, "circle");
+    dot.setAttribute("r", "4.5");
+    dot.setAttribute("fill", pulseColour(f));
+    layer.appendChild(dot);
+    var dropped = f.kind === "drop";
+    var dur = 420, start = null;
+    function step(t) {
+      if (start === null) start = t;
+      var k = Math.min(1, (t - start) / dur);
+      var travel = dropped ? Math.min(k, 0.5) : k;
+      var e = travel < 0.5 ? 2 * travel * travel : 1 - Math.pow(-2 * travel + 2, 2) / 2;
+      dot.setAttribute("cx", a.x + (b.x - a.x) * e);
+      dot.setAttribute("cy", a.y + (b.y - a.y) * e);
+      if (dropped && k > 0.5) dot.setAttribute("opacity", String(1 - (k - 0.5) * 2));
+      if (k < 1) requestAnimationFrame(step); else dot.remove();
+    }
+    requestAnimationFrame(step);
+  }
+
   // ------------------------------------------------------------- websocket
   var ws = null;
   var stateEl = document.getElementById("state");
@@ -227,7 +472,7 @@
   }
 
   // defaultURL guesses the endpoint. A page served over HTTPS cannot open a
-  // ws:// socket — browsers block it as mixed content — so the scheme has to
+  // ws:// socket (browsers block it as mixed content), so the scheme has to
   // follow the page's own.
   function defaultURL() {
     var saved = null;
@@ -276,7 +521,7 @@
     var url = urlEl.value.trim();
     if (!url) return;
     if (location.protocol === "https:" && url.indexOf("ws://") === 0) {
-      line(C.level.error + "this page is served over https, so the backend must be wss:// — browsers block ws:// as mixed content" + C.reset);
+      line(C.level.error + "this page is served over https, so the backend must be wss://. browsers block ws:// as mixed content" + C.reset);
       return;
     }
     try { localStorage.setItem("backend", url); } catch (e) { /* private mode */ }
@@ -312,7 +557,13 @@
       var f;
       try { f = JSON.parse(ev.data); } catch (e) { return; }
 
+      if (f.type === "state") {
+        renderMap(f);
+        return;
+      }
+
       if (f.type === "log") {
+        if (f.from && f.to) pulse(f);
         var colour = C.level[f.level] || C.level.info;
         var tag = f.tag ? (C.dim + pad(f.tag, 8) + C.reset + " ") : "        ";
         line("  " + tag + colour + f.msg + C.reset);
@@ -335,6 +586,8 @@
 
     ws.onclose = function () {
       setState("offline", "down");
+      mapEl.classList.add("stale");
+      mapNote.textContent = "disconnected";
       line("\r\n" + C.dim + "disconnected. your cluster is gone; reconnecting builds a fresh one." + C.reset);
       busy = true;
       ws = null;

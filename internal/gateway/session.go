@@ -56,6 +56,28 @@ func (s *session) Emit(e logstream.Event) {
 	}
 }
 
+// Snapshot implements cluster.Snapshotter. Mid-command snapshots may be dropped
+// under backpressure like logs; every command still ends with a fresh one.
+func (s *session) Snapshot(st cluster.Status) {
+	select {
+	case s.out <- newStateFrame(st):
+	default:
+		s.dropped.Add(1)
+	}
+}
+
+// publishState queues the cluster's current state, waiting for room, so the
+// map is always correct by the time a command's result arrives.
+func (s *session) publishState(ctx context.Context) {
+	var st cluster.Status
+	s.engine.Do(logstream.Discard, func() { st = s.engine.Status(ctx) })
+	select {
+	case s.out <- newStateFrame(st):
+	case <-time.After(2 * time.Second):
+		s.logger.Warn("dropped state frame, outbox full")
+	}
+}
+
 func (s *session) info(tag, msg string) {
 	s.Emit(logstream.Event{Level: logstream.Info, Tag: tag, Msg: msg})
 }
@@ -93,6 +115,7 @@ func (s *session) greet(ctx context.Context) {
 			led++
 		}
 	}
+	s.Snapshot(st)
 	s.result(fmt.Sprintf("OK cluster up, %d/%d shards led. type help", led, len(st.Shards)))
 }
 
@@ -220,6 +243,7 @@ func (s *session) dispatch(ctx context.Context, line string) {
 
 	var result string
 	s.engine.Do(s, func() { result = s.execute(ctx, cmd) })
+	s.publishState(ctx)
 	s.result(result)
 }
 

@@ -4,7 +4,7 @@
 // exists on the other end.
 package logstream
 
-// Level classifies an event. The set is closed — the frontend colour-codes on
+// Level classifies an event. The set is closed. The frontend colour-codes on
 // these exact strings, so adding one here without adding it to docs/control-plane.md
 // and the frontend produces an uncoloured line.
 type Level string
@@ -33,13 +33,18 @@ type Event struct {
 	Level Level
 	Tag   string // short origin marker: "[s0]", "[2PC]", "[net]"
 	Msg   string
+
+	// From, To and Kind are set when the event is a message travelling between
+	// two participants (replica ids, or "2pc" for the coordinator), so a viewer
+	// can draw it without parsing Msg. Kind is e.g. "prepare", "accepted", "drop".
+	From, To, Kind string
 }
 
 // Sink receives events. Implementations must be safe for concurrent use: the
 // nodes of a shard emit from their own goroutines.
 //
 // Emit must not block indefinitely. A slow consumer has to drop rather than
-// stall consensus — a demo that wedges because someone's browser stopped
+// stall consensus. A demo that wedges because someone's browser stopped
 // reading is worse than a demo with a gap in its log.
 type Sink interface {
 	Emit(Event)
@@ -84,6 +89,14 @@ func (e *Emitter) emit(level Level, msg string) {
 		return
 	}
 	e.sink.Emit(Event{Level: level, Tag: e.tag, Msg: msg})
+}
+
+// Edge emits a message travelling from one participant to another.
+func (e *Emitter) Edge(level Level, from, to, kind, msg string) {
+	if e == nil {
+		return
+	}
+	e.sink.Emit(Event{Level: level, Tag: e.tag, Msg: msg, From: from, To: to, Kind: kind})
 }
 
 func (e *Emitter) Paxos(msg string)  { e.emit(Paxos, msg) }

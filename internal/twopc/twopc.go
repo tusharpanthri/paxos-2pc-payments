@@ -36,6 +36,10 @@ type Participant interface {
 	Abort(ctx context.Context, tx string) error
 }
 
+// Coordinator2PC is the coordinator's name in events that travel to or from a
+// participant, the counterpart of a participant's Name.
+const Coordinator2PC = "2pc"
+
 // ErrInDoubt means the decision was COMMIT but at least one participant could
 // not be told yet. Its account stays locked until a background retry lands.
 var ErrInDoubt = errors.New("in doubt")
@@ -94,15 +98,15 @@ func (c *Coordinator) Transfer(ctx context.Context, from Participant, fromKey st
 			c.log.TwoPC(fmt.Sprintf("PREPARE %s skipped: a participant already voted NO", l.p.Name()))
 			continue
 		}
-		c.log.TwoPC(fmt.Sprintf("PREPARE %s -> %s: %s %s %d", tx, l.p.Name(), verb, l.key, abs(l.delta)))
+		c.log.Edge(logstream.TwoPC, Coordinator2PC, l.p.Name(), "prepare", fmt.Sprintf("PREPARE %s -> %s: %s %s %d", tx, l.p.Name(), verb, l.key, abs(l.delta)))
 
 		if err := l.p.Prepare(ctx, tx, l.key, l.delta); err != nil {
-			c.log.WithTag("[" + l.p.Name() + "]").Error("vote NO: " + err.Error())
+			c.log.WithTag("["+l.p.Name()+"]").Edge(logstream.Error, l.p.Name(), Coordinator2PC, "vote-no", "vote NO: "+err.Error())
 			refusal = fmt.Errorf("%s voted NO: %w", l.p.Name(), err)
 			continue
 		}
 		prepared++
-		c.log.WithTag("[" + l.p.Name() + "]").TwoPC(fmt.Sprintf("vote YES: %s locked for %s", l.key, tx))
+		c.log.WithTag("["+l.p.Name()+"]").Edge(logstream.TwoPC, l.p.Name(), Coordinator2PC, "vote-yes", fmt.Sprintf("vote YES: %s locked for %s", l.key, tx))
 	}
 
 	if refusal != nil {
@@ -114,7 +118,7 @@ func (c *Coordinator) Transfer(ctx context.Context, from Participant, fromKey st
 				c.log.WithTag("[" + l.p.Name() + "]").Error("abort not delivered, lock may linger: " + err.Error())
 				continue
 			}
-			c.log.TwoPC("ABORT -> " + l.p.Name() + " released")
+			c.log.Edge(logstream.TwoPC, Coordinator2PC, l.p.Name(), "abort", "ABORT -> "+l.p.Name()+" released")
 		}
 		return refusal
 	}
@@ -129,7 +133,7 @@ func (c *Coordinator) Transfer(ctx context.Context, from Participant, fromKey st
 			undelivered = append(undelivered, l.p)
 			continue
 		}
-		c.log.TwoPC(fmt.Sprintf("COMMIT -> %s applied", l.p.Name()))
+		c.log.Edge(logstream.TwoPC, Coordinator2PC, l.p.Name(), "commit", fmt.Sprintf("COMMIT -> %s applied", l.p.Name()))
 	}
 
 	if len(undelivered) > 0 {
@@ -169,7 +173,7 @@ func (c *Coordinator) retryInBackground(tx string, p Participant) {
 			err := p.Commit(ctx, tx)
 			cancel()
 			if err == nil {
-				c.log.TwoPC(fmt.Sprintf("COMMIT -> %s applied on retry; %s is settled", p.Name(), tx))
+				c.log.Edge(logstream.TwoPC, Coordinator2PC, p.Name(), "commit", fmt.Sprintf("COMMIT -> %s applied on retry; %s is settled", p.Name(), tx))
 				return
 			}
 		}

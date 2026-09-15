@@ -16,12 +16,29 @@ cluster. `GET /healthz` returns `200 ok`.
 {"cmd": "transfer tushar varun 25"}
 ```
 
-**Server → client**, zero or more log frames, then **exactly one** result frame:
+**Server → client**, zero or more log and state frames, then **exactly one**
+result frame:
 
 ```json
 {"type":"log","level":"twopc","tag":"[2PC]","msg":"decision COMMIT tx1 (2/2 yes)"}
+{"type":"log","level":"paxos","tag":"[s2]","msg":"ACCEPT slot=1 ballot=1.s2n0 s2n0 -> s2n1","from":"s2n0","to":"s2n1","kind":"accept"}
+{"type":"state","shards":[{"shard":2,"leader":"s2n1","term":2,"quorum":2,"nodes":[{"id":"s2n0","alive":false,"role":"follower","applied":7}]}],"partitions":[],"accounts":[{"key":"tushar","shard":2,"balance":75}]}
 {"type":"result","msg":"OK moved 25 from tushar to varun"}
 ```
+
+- `from`, `to` and `kind` appear on a log frame only when it describes a
+  message between two participants. Endpoints are replica ids, a shard name
+  (`s0`) for a 2PC participant, or `2pc` for the coordinator. `kind` is one of
+  `prepare`, `promise`, `accept`, `accepted`, `reject`, `drop` (Paxos) or
+  `prepare`, `vote-yes`, `vote-no`, `commit`, `abort` (2PC). The frontend's map
+  animates these; the terminal ignores them.
+- A `state` frame is a full snapshot built from `Engine.Status`, and the map
+  is redrawn from it each time. One is sent after the startup elections and
+  before every command's result. Others are sent mid-command when a role
+  changes or a fault is applied (`kill`, `revive`, `partition`, `heal`), so the
+  map moves in step with the log. Mid-command snapshots can be dropped under
+  backpressure like log lines, but the one before the result never is.
+  `locked_by` is omitted when the account is not locked.
 
 - `level` is one of a closed set, colour-coded by the frontend:
   `paxos`, `twopc`, `leader`, `net`, `error`, `client`, `info`
@@ -48,7 +65,7 @@ cluster. `GET /healthz` returns `200 ok`.
 |---|---|
 | `put k v` | one Multi-Paxos round on `shard(k)`: `ACCEPT` to peers, `ACCEPTED` back, `COMMIT` once a majority holds it |
 | `get k` | the read is itself proposed through the log, so it is linearizable: it sees every write acknowledged before it, even across a leader change |
-| `transfer a b n` | same shard: one round of a `transfer` command. Different shards: [`twopc`](../internal/twopc/twopc.go) — `BEGIN`, `PREPARE` on each shard (each a Paxos round; reaching quorum *is* that shard's YES), `decision`, then `COMMIT`/`ABORT` rounds |
+| `transfer a b n` | same shard: one round of a `transfer` command. Different shards: [`twopc`](../internal/twopc/twopc.go): `BEGIN`, `PREPARE` on each shard (each a Paxos round; reaching quorum *is* that shard's YES), `decision`, then `COMMIT`/`ABORT` rounds |
 | `kill n` | fault table marks `n` dead; if it led, a survivor in the majority campaigns immediately |
 | `revive n` | clears the mark; the replica rejoins with its log and catches up from the leader |
 | `partition g1 \| g2 …` | drop every message between groups; replicas named in no group form one more group together |

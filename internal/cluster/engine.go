@@ -599,10 +599,13 @@ func inGroup(group []Replica, id string) bool {
 	return false
 }
 
+// push applies a fault table change everywhere it needs to go: node processes
+// in gRPC mode, and any viewer drawing the cluster.
 func (e *Engine) push(ctx context.Context) {
 	if e.pushFaults != nil {
 		e.pushFaults(ctx, e.faults.State())
 	}
+	e.snapshot(ctx)
 }
 
 // --- inspection ---------------------------------------------------------

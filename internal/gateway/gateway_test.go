@@ -20,11 +20,19 @@ type frame struct {
 	Level string `json:"level"`
 	Tag   string `json:"tag"`
 	Msg   string `json:"msg"`
+	From  string `json:"from"`
+	To    string `json:"to"`
+	Kind  string `json:"kind"`
+
+	Shards []shardState `json:"shards"`
 }
 
 type client struct {
 	t    *testing.T
 	conn *websocket.Conn
+	// states counts state frames seen, and last is the most recent one.
+	states int
+	last   []shardState
 }
 
 func dial(t *testing.T) *client {
@@ -78,6 +86,9 @@ func (c *client) until() ([]frame, string) {
 				c.t.Fatalf("level %q is outside the protocol's closed set", f.Level)
 			}
 			logs = append(logs, f)
+		case "state":
+			c.states++
+			c.last = f.Shards
 		case "result":
 			return logs, f.Msg
 		default:
@@ -120,6 +131,15 @@ func TestProtocolEndToEnd(t *testing.T) {
 			t.Errorf("missing %q in\n%s", want, joined)
 		}
 	}
+	edges := 0
+	for _, l := range logs {
+		if l.Kind == "accept" && l.From == "s2n0" && strings.HasPrefix(l.To, "s2n") {
+			edges++
+		}
+	}
+	if edges != 2 {
+		t.Errorf("want 2 accept edges from s2n0, got %d", edges)
+	}
 
 	c.run("put varun 10")
 	if _, res := c.run("transfer tushar varun 500"); !strings.HasPrefix(res, "ABORT ") {
@@ -131,6 +151,23 @@ func TestProtocolEndToEnd(t *testing.T) {
 	if _, res := c.run("get varun"); res != "OK varun=50" {
 		t.Fatalf("get result %q", res)
 	}
+
+	// The map's view: a kill shows up as a dead replica and a new leader.
+	before := c.states
+	if _, res := c.run("kill s2n0"); res != "OK s2n0 is down" {
+		t.Fatalf("kill result %q", res)
+	}
+	if c.states == before {
+		t.Fatal("kill produced no state frame")
+	}
+	s2 := c.last[2]
+	if s2.Leader == "" || s2.Leader == "s2n0" {
+		t.Errorf("s2 leader after kill = %q", s2.Leader)
+	}
+	if s2.Nodes[0].ID != "s2n0" || s2.Nodes[0].Alive {
+		t.Errorf("s2n0 in state = %+v, want dead", s2.Nodes[0])
+	}
+	c.run("revive s2n0")
 
 	cases := map[string]string{
 		"frobnicate":                 "ERROR unknown command",
